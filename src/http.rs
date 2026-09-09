@@ -1,6 +1,6 @@
 use axum::Json;
-use serde::Deserialize;
-
+use serde::{Deserialize, Serialize};
+use crate::error::AppError;
 #[derive(Deserialize)]
 pub struct In {
     agent : String,
@@ -8,8 +8,20 @@ pub struct In {
     supersedes : Option<String>,
 }
 
-pub async fn create(
-    Json(b): Json<In>
-) -> String {
-    format!("{}: {}", b.agent, b.text)
+#[derive(Serialize)]
+pub struct Out {
+    id : String,
+    agent : String,
+    text : String,
+}
+
+pub async fn create( 
+    Json(b) : Json<In> 
+) -> Result<Json<Out>, AppError> {
+    let out = Out{ 
+        id : "123".to_string(),
+        agent : b.agent,
+        text : b.text,
+    };
+    Ok(Json(out))
 }

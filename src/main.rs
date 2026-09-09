@@ -1,9 +1,13 @@
 mod http;
+mod error;
+mod hydra;
 
 use axum::{routing::{get, post}, Router};
 use http::create;
 #[tokio::main]
 async fn main() {
+
+let hydra = hydra::Hydra::from_env();
     let app = Router::new()
     .route("/healthz", get(healthz))
     .route("/v1/decisions", post(create));
