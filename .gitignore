@@ -1,1 +1,6 @@
 /target
+.env
+*.pem
+*.key
+auth-token*
+build.md
