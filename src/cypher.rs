@@ -1,10 +1,12 @@
-pub const CREATE: &str =
-    "MERGE (a {id: $agent}) CREATE (a)-[:DECIDED]->(d {id: $id, text: $text, ts: $ts})";
+// Hydra's local query engine only accepts one-hop CREATE with integer `id`.
+// API string ids live in `key`; `id` is a stable hash for Hydra.
+
+pub const CREATE: &str = "CREATE (a {id: $aid, key: $agent})-[:DECIDED]->(d {id: $did, key: $id, text: $text, ts: $ts})";
 pub const GET: &str =
-    "MATCH (d {id: $id}) RETURN d.id AS id, d.text AS text, d.ts AS ts";
+    "MATCH (d {key: $id}) RETURN d.key AS id, d.text AS text, d.ts AS ts";
 pub const SUPERSEDE: &str =
-    "MATCH (n {id: $new}), (o {id: $old}) CREATE (n)-[:SUPERSEDES]->(o)";
+    "CREATE (n {id: $nid, key: $new, text: $new_text, ts: $new_ts})-[:SUPERSEDES]->(o {id: $oid, key: $old, text: $old_text, ts: $old_ts})";
 pub const LIST: &str =
-    "MATCH (a {id: $agent})-[:DECIDED]->(d) RETURN d.id AS id, d.text AS text, d.ts AS ts";
+    "MATCH (a {key: $agent})-[:DECIDED]->(d) RETURN d.key AS id, d.text AS text, d.ts AS ts";
 pub const HOP: &str =
-    "MATCH (d {id: $id})-[:SUPERSEDES]->(o) RETURN o.id AS id, o.text AS text, o.ts AS ts";
+    "MATCH (d {key: $id})-[:SUPERSEDES]->(o) RETURN o.key AS id, o.text AS text, o.ts AS ts";
