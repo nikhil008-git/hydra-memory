@@ -10,12 +10,50 @@ Happy-path demo: you curl **this** API (`:3000`). This process talks to Hydra in
 curl → hydra-memory (:3000)
         → HTTP Cypher + Bearer + X-Graph-Namespace
         → graph-node (HydraDB)
+        → local disk store (SlateDB files)
 ```
 
 **Not:** a chatbot, LLM, UI, Postgres/SQLite, Hydra SaaS, or in-place UPDATE. History is a **new Decision node + `SUPERSEDES` edge**.
 
 ---
 
+## Where the data lives (local Hydra)
+
+Both of these are true:
+
+- Data is **in Hydra** — `graph-node` owns the graph (vertices, edges, properties).
+- Bytes sit on **your local disk** — the node writes durable files under the path you set when starting it.
+
+This API (`hydra-memory`) is **stateless**. Postman JSON is not saved in this repo, not in SQLite, and not only in RAM for the long term. After a successful `POST /v1/decisions`, the graph lives inside **Hydra**.
+
+### Local layout (default from the Run section)
+
+When you start `graph-node` with `ROOT=/tmp/sgk-local`:
+
+| Path | Role |
+|------|------|
+| `/tmp/sgk-local/store` | Durable store (`LOCAL_PATH`) — graph data on disk |
+| `/tmp/sgk-local/cache` | Disposable cache |
+| `/tmp/sgk-local/auth-token` | Bearer token file (must match `HYDRA_TOKEN`) |
+
+`/tmp` can be cleared on reboot. For data you want to keep, point `LOCAL_PATH` at a permanent directory when starting `graph-node`.
+
+### Inside the engine: SlateDB
+
+Hydra does not use Postgres. Open-source `graph-node` persists the graph through **SlateDB** (embedded LSM / object-store–friendly key-value storage: WAL, SSTs, etc.). Locally that is files under `LOCAL_PATH`. In cloud setups the same idea can sit on object storage (e.g. S3).
+
+You never open SlateDB from this repo — only Cypher over Hydra’s HTTP API.
+
+### Graph shape (what you query)
+
+```
+(Agent {key})-[:DECIDED]->(Decision {key, text, ts})
+(Decision)-[:SUPERSEDES]->(Decision)   # only if client sent supersedes
+```
+
+Lineage walks `SUPERSEDES` (newest → older). That chain in the JSON response is read **from Hydra**, which reads **from the local SlateDB store**.
+
+---
 ## Endpoints
 
 | Method | Path | Meaning |
@@ -61,16 +99,32 @@ The new `id` is `NEW`. Then `GET /v1/decisions/<NEW>/lineage`
 
 ## Requirements
 
-Two processes:
+Two processes (two repos):
 
-1. **`graph-node`** (Hydra OSS) — query HTTP `http://127.0.0.1:18443`, admin `http://127.0.0.1:19091`
-2. **`hydra-memory`** — `http://127.0.0.1:3000`
+1. **`graph-node`** — HydraDB OSS database server (separate clone, **not** inside this repo)
+2. **`hydra-memory`** — this API on `http://127.0.0.1:3000`
 
-Start Hydra first. A listening port is not enough; Hydra’s own CREATE + MATCH smoke should work (see Hydra `AGENTS.md`). Token ≥ 32 chars. `X-Graph-Namespace` must match `GRAPH_NAMESPACE` (e.g. `local`). `GRAPH_ALLOW_PLAINTEXT=true` for local.
+| Process | Typical ports |
+|---------|----------------|
+| `graph-node` query HTTP | `http://127.0.0.1:18443` |
+| `graph-node` admin `/readyz` | `http://127.0.0.1:19091` |
+| this API | `http://127.0.0.1:3000` |
+
+Clone Hydra next to this project, e.g.:
+
+```text
+Developer/
+  hydradb/          ← OSS graph-node (follow its AGENTS.md)
+  hydra-memory/     ← this repo
+```
+
+Native deps and first-time env for Hydra are documented in **`hydradb/AGENTS.md`** (brew packages, `/tmp/sgk-env.sh`, etc.). Token ≥ 32 characters. Local only: `GRAPH_ALLOW_PLAINTEXT=true`. `X-Graph-Namespace` / `HYDRA_NAMESPACE` must match `GRAPH_NAMESPACE` (e.g. `local`).
+
+A listening port is not enough — Hydra’s own CREATE + MATCH smoke in `AGENTS.md` should pass before you demo this API.
 
 Rust: recent stable (`edition = "2024"`). Then `cargo build` in this repo.
 
-This API does **not** load `.env` by itself. Export vars in the same shell as `cargo run` (or `set -a; source .env; set +a` if the file is only `export KEY=...` lines).
+This API does **not** load `.env` by itself. Export vars in the same shell as `cargo run`. If you keep a `.env` of `export KEY=...` lines only (no shell commands), you can `set -a; source .env; set +a`.
 
 ---
 
@@ -85,7 +139,7 @@ export HYDRA_GRAPH=default
 export HYDRA_CELL=cell-0
 ```
 
-`HYDRA_TOKEN` must match the token `graph-node` was started with. Missing `HYDRA_TOKEN` panics on startup.
+These must match how you started `graph-node` (URL/ports, token file, namespace, graph id, cell id). Missing `HYDRA_TOKEN` panics on startup.
 
 Localhost only. No auth on `:3000` in this MVP.
 
@@ -93,17 +147,51 @@ Localhost only. No auth on `:3000` in this MVP.
 
 ## Run
 
-```bash
-# terminal 1: graph-node (from the hydradb tree, per its AGENTS.md)
-curl -fsS http://127.0.0.1:19091/readyz && echo READY
+### Terminal 1 — start Hydra (`graph-node`)
 
-# terminal 2: this API
+From the **hydradb** tree (after `AGENTS.md` setup / `source /tmp/sgk-env.sh` if you use it):
+
+```bash
+cd /path/to/hydradb
+# ensure brew lib paths if needed (see AGENTS.md), then:
+
+ROOT=/tmp/sgk-local
+rm -rf -- "$ROOT"
+mkdir -p "$ROOT/store" "$ROOT/cache"
+printf '%s\n' 'local-dev-auth-token-32-characters-long' >"$ROOT/auth-token"
+
+export CLOUD_PROVIDER=local LOCAL_PATH="$ROOT/store"
+export GRAPH_NAMESPACE=local GRAPH_ID=default
+export GRAPH_CELL_ID=cell-0 GRAPH_CELLS=cell-0 GRAPH_DATA_PATH=data
+export GRAPH_ALLOW_PLAINTEXT=true GRAPH_AUTH_TOKEN_FILE="$ROOT/auth-token"
+export GRAPH_DATA_CACHE_BYTES=67108864 GRAPH_DATA_CACHE_DIR="$ROOT/cache"
+export GRAPH_NODE_ID=node-0
+export GRAPH_BOLT_ADDR=127.0.0.1:17687 GRAPH_ADVERTISED_BOLT_ADDR=127.0.0.1:17687
+export GRAPH_BOLT_NODE_ADDRESSES=node-0=127.0.0.1:17687
+export GRAPH_HTTP_ADDR=127.0.0.1:18443 GRAPH_ADMIN_ADDR=127.0.0.1:19091
+export RUST_MIN_STACK=33554432 RUST_LOG=info
+
+cargo build --locked --features server-runtime --bin graph-node
+./target/debug/graph-node
+```
+
+Leave that terminal running. In another shell:
+
+```bash
+curl -fsS http://127.0.0.1:19091/readyz && echo READY
+```
+
+Full first-time install and CREATE+MATCH smoke: **`hydradb/AGENTS.md`**.
+
+### Terminal 2 — start this API
+
+```bash
 cd /path/to/hydra-memory
-# exports from above
+# exports from Env above (token must match $ROOT/auth-token)
 cargo run
 ```
 
-You should see `http://127.0.0.1:3000`.
+You should see `http://127.0.0.1:3000`. Happy-path curls hit **this** port, not Hydra directly.
 
 ---
 
